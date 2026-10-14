@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f6f4ef">
+<title>五子棋 · Gomoku</title>
+<link rel="stylesheet" href="style.css?v=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23e9c68c'/><circle cx='12' cy='12' r='5' fill='%23222'/><circle cx='21' cy='21' r='5' fill='%23fff' stroke='%23bbb'/></svg>">
+</head>
+<body>
+<div class="app">
+  <header class="head">
+    <h1>五子棋</h1>
+    <p class="sub">你先手 · 15×15</p>
+  </header>
+
+  <div class="statusbar">
+    <span class="dot" id="turnDot"></span>
+    <span id="status">轮到你落子</span>
+    <span class="meta" id="meta"></span>
+  </div>
+
+  <div class="board-wrap">
+    <canvas id="board"></canvas>
+    <div class="result" id="result" hidden>
+      <div class="result-card">
+        <div class="result-title" id="resultTitle">你赢了</div>
+        <div class="result-sub" id="resultSub"></div>
+        <button class="btn primary" id="resultAgain">再来一局</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="row">
+      <span class="label">难度</span>
+      <div class="seg" id="segLevel">
+        <button data-v="easy">简单</button>
+        <button data-v="medium" class="on">中等</button>
+        <button data-v="hard">困难</button>
+      </div>
+    </div>
+    <div class="row">
+      <span class="label">我的棋子</span>
+      <div class="seg" id="segSide">
+        <button data-v="1" class="on"><i class="stone black"></i>黑棋（先手）</button>
+        <button data-v="2"><i class="stone white"></i>白棋（后手）</button>
+      </div>
+    </div>
+    <div class="row actions">
+      <button class="btn" id="undo">悔棋</button>
+      <button class="btn" id="restart">重新开始</button>
+    </div>
+  </div>
+
+  <footer class="foot">点交叉点落子 · 五子连珠者胜</footer>
+</div>
+
+<script src="core.js?v=1"></script>
+<script src="ui.js?v=1"></script>
+</body>
+</html>
