@@ -213,35 +213,195 @@
 
   var WIN_SCORE = 1e8;
 
+  /* ---------- 搜索的时间管理：超时用异常跳出，回到上一轮完整结果 ---------- */
+  var SEARCH = { deadline: 0, nodes: 0, ttHits: 0 };
+  var TIMEOUT = { timeout: true };
+  function checkTime() {
+    if (!SEARCH.deadline) return;                      // 未限时（浅层调用）不打断
+    if ((++SEARCH.nodes & 127) === 0 && Date.now() > SEARCH.deadline) throw TIMEOUT;
+  }
+
+  /* ---------- Zobrist 哈希 + 置换表（避免重复搜同一个局面） ---------- */
+  var ZOB = [];
+  (function () {
+    for (var r = 0; r < 2; r++) {
+      ZOB.push([]);
+      for (var i = 0; i < SIZE * SIZE; i++) ZOB[r].push((Math.random() * 0x100000000) >>> 0);
+    }
+  })();
+  var HASH = 0;
+  function hashToggle(role, x, y) { HASH = (HASH ^ ZOB[role - 1][y * SIZE + x]) >>> 0; }
+  function hashRebuild(board) {
+    HASH = 0;
+    for (var y = 0; y < SIZE; y++) {
+      for (var x = 0; x < SIZE; x++) if (board[y][x]) hashToggle(board[y][x], x, y);
+    }
+  }
+  var TT = new Map();   // key: hash → {d: 深度, v: 分数, f: 0精确/1下界/2上界, m: 最佳着法}
+
   /* ---------- negamax + alpha-beta ---------- */
-  function negamax(board, depth, alpha, beta, role, budget) {
-    budget.nodes++;
+  function negamax(board, depth, alpha, beta, role) {
+    checkTime();
     if (depth === 0) return evaluate(board, role);
-    var moves = orderedMoves(board, role, depth >= 4 ? 6 : (depth >= 2 ? 8 : 10));
-    var best = -Infinity;
+
+    var alpha0 = alpha, beta0 = beta;
+    var entry = TT.get(HASH);
+    var ttMove = null;
+    if (entry) {
+      ttMove = entry.m;
+      if (entry.d >= depth) {
+        SEARCH.ttHits++;
+        if (entry.f === 0) return entry.v;
+        if (entry.f === 1 && entry.v >= beta) return entry.v;
+        if (entry.f === 2 && entry.v <= alpha) return entry.v;
+      }
+    }
+
+    var moves = orderedMoves(board, role, depth >= 6 ? 6 : (depth >= 4 ? 8 : 10));
+    if (ttMove) {                                   // 置换表里的最佳着法优先搜，剪枝更狠
+      var found = false;
+      for (var k = 0; k < moves.length; k++) {
+        if (moves[k].x === ttMove.x && moves[k].y === ttMove.y) {
+          var tmp = moves[0]; moves[0] = moves[k]; moves[k] = tmp; found = true; break;
+        }
+      }
+      if (!found && board[ttMove.y][ttMove.x] === EMPTY) moves.unshift(ttMove);
+    }
+
+    var best = -Infinity, bestMoveLocal = null;
     for (var i = 0; i < moves.length; i++) {
       var m = moves[i];
       board[m.y][m.x] = role;
+      hashToggle(role, m.x, m.y);
       var v;
       if (checkWin(board, m.x, m.y, role)) {
         v = WIN_SCORE + depth * 100;         // 越早赢越好
       } else {
-        v = -negamax(board, depth - 1, -beta, -alpha, other(role), budget);
+        v = -negamax(board, depth - 1, -beta, -alpha, other(role));
       }
       board[m.y][m.x] = EMPTY;
-      if (v > best) best = v;
+      hashToggle(role, m.x, m.y);
+      if (v > best) { best = v; bestMoveLocal = m; }
       if (best > alpha) alpha = best;
       if (alpha >= beta) break;              // 剪枝
     }
+
+    var flag = best <= alpha0 ? 2 : (best >= beta0 ? 1 : 0);
+    if (TT.size > 250000) TT.clear();
+    TT.set(HASH, { d: depth, v: best, f: flag, m: bestMoveLocal });
     return best;
+  }
+
+  /* ---------- 迭代加深：每层都先搜上一轮的最佳着法，剪枝更狠 ---------- */
+  function searchBest(board, role, maxDepth, timeLimit) {
+    SEARCH.deadline = Date.now() + timeLimit;
+    SEARCH.nodes = 0;
+    SEARCH.ttHits = 0;
+    hashRebuild(board);
+    var backup = board.map(function (r) { return r.slice(); });
+    var rootMoves = orderedMoves(board, role, 12);
+    if (!rootMoves.length) return null;
+    var best = null;
+    for (var d = 2; d <= maxDepth; d += 2) {
+      var alpha = -Infinity, localBest = null, localScore = -Infinity;
+      var moves = rootMoves;
+      if (best) {
+        moves = [best].concat(rootMoves.filter(function (m) { return !(m.x === best.x && m.y === best.y); }));
+      }
+      try {
+        for (var i = 0; i < moves.length; i++) {
+          var m = moves[i];
+          board[m.y][m.x] = role;
+          hashToggle(role, m.x, m.y);
+          var v;
+          if (checkWin(board, m.x, m.y, role)) v = WIN_SCORE + d;
+          else v = -negamax(board, d - 1, -Infinity, -alpha, other(role));
+          board[m.y][m.x] = EMPTY;
+          hashToggle(role, m.x, m.y);
+          if (v > localScore) { localScore = v; localBest = m; }
+          if (v > alpha) alpha = v;
+        }
+      } catch (e) {
+        if (e !== TIMEOUT) throw e;
+        for (var y = 0; y < SIZE; y++) for (var x = 0; x < SIZE; x++) board[y][x] = backup[y][x];
+        hashRebuild(board);
+        break;
+      }
+      if (localBest) { best = localBest; best.score = localScore; }
+      if (localScore >= WIN_SCORE / 2) break;          // 已经算到必胜，不用再深
+      if (Date.now() > SEARCH.deadline) break;
+    }
+    SEARCH.deadline = 0;
+    if (best) best.nodes = SEARCH.nodes;
+    return best;
+  }
+
+  /* ---------- VCF：连续冲四取胜搜索 ----------
+   * 只走"对方必须应答"的强制手（冲四/活四），看能不能一路杀到底。
+   * 这是发现双三、四三、连冲杀棋的关键，浅层 alpha-beta 很难搜到。
+   * 返回获胜着法序列，找不到返回 null。
+   */
+  function vcfSearch(board, role, depth) {
+    if (depth <= 0) return null;
+    checkTime();
+    var opp = other(role);
+    var list = candidates(board);
+    var i, m, t;
+
+    // 1) 一步成五
+    for (i = 0; i < list.length; i++) {
+      m = list[i];
+      if (isWinPoint(board, m.x, m.y, role)) return [{ x: m.x, y: m.y }];
+    }
+    // 2) 一步成活四 / 双冲四 → 对方挡不住，必胜
+    for (i = 0; i < list.length; i++) {
+      m = list[i];
+      t = threatsAt(board, m.x, m.y, role);
+      if (t.fours >= 1 || t.rushes >= 2) return [{ x: m.x, y: m.y }];
+    }
+    // 3) 单个冲四：对方只能堵，堵完我继续找冲四
+    for (i = 0; i < list.length; i++) {
+      m = list[i];
+      t = threatsAt(board, m.x, m.y, role);
+      if (t.rushes < 1) continue;
+      board[m.y][m.x] = role;
+      var ow = findWinPoint(board, opp);
+      if (ow) {
+        board[ow.y][ow.x] = opp;
+        var rest = vcfSearch(board, role, depth - 1);
+        board[ow.y][ow.x] = EMPTY;
+        board[m.y][m.x] = EMPTY;
+        if (rest) return [{ x: m.x, y: m.y }].concat(rest);
+      } else {
+        board[m.y][m.x] = EMPTY;
+      }
+    }
+    return null;
+  }
+
+  /* 我方能否靠连续冲四取胜（带时间保护，避免搜太久） */
+  function canWinByVCF(board, role, depth, ms) {
+    var saved = SEARCH.deadline;
+    var backup = board.map(function (r) { return r.slice(); });
+    SEARCH.deadline = Date.now() + (ms || 250);
+    var seq = null;
+    try {
+      seq = vcfSearch(board, role, depth);
+    } catch (e) {
+      if (e !== TIMEOUT) throw e;
+      for (var y = 0; y < SIZE; y++) for (var x = 0; x < SIZE; x++) board[y][x] = backup[y][x];
+    }
+    SEARCH.deadline = saved;
+    return seq;
   }
 
   /* ---------- 选点主函数 ----------
    * level: 'easy' | 'medium' | 'hard'
    * 返回 {x, y, score, nodes}
    */
-  function bestMove(board, role, level) {
+  function bestMove(board, role, level, timeLimitMs) {
     var opp = other(role);
+    var budget = timeLimitMs || 2000;                // 思考时间上限（毫秒）
     var emptyCount = 0;
     for (var y = 0; y < SIZE; y++) for (var x = 0; x < SIZE; x++) if (!board[y][x]) emptyCount++;
     if (emptyCount === SIZE * SIZE) return { x: 7, y: 7, score: 0, nodes: 0 };
@@ -269,11 +429,12 @@
       return { x: pick.x, y: pick.y, score: 0, nodes: 0 };
     }
 
-    /* 3) 我能造活四 → 下一步必胜（对手挡不住）；3.5) 双威胁同样是必胜 */
+    /* 3) 我能造活四 / 双冲四 → 下一步必胜（对手挡不住）；3.5) 双威胁同样是必胜 */
     if (level !== 'easy') {
       for (i = 0; i < list.length; i++) {
         m = list[i];
-        if (threatsAt(board, m.x, m.y, role).fours >= 1) {
+        var tt = threatsAt(board, m.x, m.y, role);
+        if (tt.fours >= 1 || tt.rushes >= 2) {
           return { x: m.x, y: m.y, score: 4000000, nodes: 0 };
         }
       }
@@ -288,6 +449,11 @@
           }
         }
         if (dbl) return { x: dbl.x, y: dbl.y, score: 3800000, nodes: 0 };
+      }
+      /* 3.7) 算一算连续冲四能不能一路杀到底（VCF 连杀） */
+      var vcfSeq = canWinByVCF(board, role, 12, Math.min(150, budget * 0.25));
+      if (vcfSeq && vcfSeq.length) {
+        return { x: vcfSeq[0].x, y: vcfSeq[0].y, score: 3900000, nodes: 0 };
       }
     }
     /* 4) 对手下一手能造活四或双威胁 → 必须先拆 */
@@ -344,37 +510,52 @@
       return { x: cand[idx].x, y: cand[idx].y, score: cand[idx].score, nodes: 0 };
     }
 
-    var depth = level === 'hard' ? 4 : 2;
-    var budget = { nodes: 0 };
-    var top = orderedMoves(board, role, depth >= 4 ? 8 : 10);
+    /* 困难档：迭代加深搜索（2→4→6→8 层），带时间上限，超时就退回上一层结果 */
+    if (level === 'hard') {
+      var res = searchBest(board, role, 10, budget);
+      if (res) return { x: res.x, y: res.y, score: res.score || 0, nodes: res.nodes || 0 };
+    }
+
+    /* 中等档：浅搜索 + 一点随机，避免每局一模一样 */
+    var depth = 2;
+    var top = orderedMoves(board, role, 10);
     var bestVal = -Infinity, bestM = top[0];
     var alpha = -Infinity;
-    for (i = 0; i < top.length; i++) {
-      m = top[i];
-      board[m.y][m.x] = role;
-      var v;
-      if (checkWin(board, m.x, m.y, role)) v = WIN_SCORE;
-      else v = -negamax(board, depth - 1, -Infinity, -alpha, opp, budget);
-      board[m.y][m.x] = EMPTY;
-      if (v > bestVal) { bestVal = v; bestM = m; }
-      if (v > alpha) alpha = v;
+    var backup2 = board.map(function (r) { return r.slice(); });
+    SEARCH.nodes = 0;
+    SEARCH.deadline = Date.now() + 400;                 // 中等档也给个时间上限，防止卡顿
+    try {
+      for (i = 0; i < top.length; i++) {
+        m = top[i];
+        board[m.y][m.x] = role;
+        var v;
+        if (checkWin(board, m.x, m.y, role)) v = WIN_SCORE;
+        else v = -negamax(board, depth - 1, -Infinity, -alpha, opp);
+        board[m.y][m.x] = EMPTY;
+        if (v > bestVal) { bestVal = v; bestM = m; }
+        if (v > alpha) alpha = v;
+      }
+      if (top.length > 1) {
+        board[top[0].y][top[0].x] = role;
+        var v0 = checkWin(board, top[0].x, top[0].y, role) ? WIN_SCORE : -negamax(board, depth - 1, -Infinity, Infinity, opp);
+        board[top[0].y][top[0].x] = EMPTY;
+        if (bestVal < v0) bestVal = v0;
+        if (Math.abs(bestVal - v0) < Math.abs(v0) * 0.15 + 1000 && Math.random() < 0.25) bestM = top[1];
+      }
+    } catch (e) {
+      if (e !== TIMEOUT) throw e;
+      for (var yy = 0; yy < SIZE; yy++) for (var xx = 0; xx < SIZE; xx++) board[yy][xx] = backup2[yy][xx];
     }
-    // medium 档：在分差极小的前两名里随机，避免每局一模一样
-    if (level === 'medium' && top.length > 1) {
-      board[top[0].y][top[0].x] = role;
-      var v0 = checkWin(board, top[0].x, top[0].y, role) ? WIN_SCORE : -negamax(board, depth - 1, -Infinity, Infinity, opp, budget);
-      board[top[0].y][top[0].x] = EMPTY;
-      if (bestVal < v0) bestVal = v0;
-      if (Math.abs(bestVal - v0) < Math.abs(v0) * 0.15 + 1000 && Math.random() < 0.25) bestM = top[1];
-    }
-    return { x: bestM.x, y: bestM.y, score: bestVal, nodes: budget.nodes };
+    SEARCH.deadline = 0;
+    return { x: bestM.x, y: bestM.y, score: bestVal, nodes: SEARCH.nodes };
   }
 
   var API = {
     SIZE: SIZE, EMPTY: EMPTY, BLACK: BLACK, WHITE: WHITE,
     createBoard: createBoard, checkWin: checkWin, pointScore: pointScore,
     isWinPoint: isWinPoint, threatsAt: threatsAt, evaluate: evaluate, bestMove: bestMove,
-    candidates: candidates, orderedMoves: orderedMoves, inBoard: inBoard
+    candidates: candidates, orderedMoves: orderedMoves, inBoard: inBoard,
+    searchBest: searchBest, vcfSearch: vcfSearch
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = API;
