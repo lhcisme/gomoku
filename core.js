@@ -299,7 +299,7 @@
     SEARCH.ttHits = 0;
     hashRebuild(board);
     var backup = board.map(function (r) { return r.slice(); });
-    var rootMoves = orderedMoves(board, role, 12);
+    var rootMoves = orderedMoves(board, role, 16);
     if (!rootMoves.length) return null;
     var best = null;
     for (var d = 2; d <= maxDepth; d += 2) {
@@ -336,6 +336,29 @@
     return best;
   }
 
+  /* ---------- 安全过滤：搜索挑出的这手，会不会让对手拿到连杀（VCF）？
+   * 会的话就从前几名候选里换一个不会的。这是防"漏杀"的最后一道闸。 ---------- */
+  function pickSafeMove(board, role, chosen, budget) {
+    var opp = other(role);
+    var ms = Math.min(220, Math.max(80, budget * 0.12));
+    function isSafe(m) {
+      board[m.y][m.x] = role;
+      var bad = false;
+      if (!checkWin(board, m.x, m.y, role)) {
+        bad = !!canWinByVCF(board, opp, 10, ms);
+      }
+      board[m.y][m.x] = EMPTY;
+      return !bad;
+    }
+    if (isSafe(chosen)) return chosen;
+    var alts = orderedMoves(board, role, 10);
+    for (var i = 0; i < alts.length; i++) {
+      if (alts[i].x === chosen.x && alts[i].y === chosen.y) continue;
+      if (isSafe(alts[i])) return alts[i];
+    }
+    return chosen;
+  }
+
   /* ---------- VCF：连续冲四取胜搜索 ----------
    * 只走"对方必须应答"的强制手（冲四/活四），看能不能一路杀到底。
    * 这是发现双三、四三、连冲杀棋的关键，浅层 alpha-beta 很难搜到。
@@ -353,11 +376,14 @@
       m = list[i];
       if (isWinPoint(board, m.x, m.y, role)) return [{ x: m.x, y: m.y }];
     }
-    // 2) 一步成活四 / 双冲四 → 对方挡不住，必胜
+    // 2) 一步成活四 / 双冲四 / 四三 / 双活三 → 对方挡住一个挡不住另一个，必胜
     for (i = 0; i < list.length; i++) {
       m = list[i];
       t = threatsAt(board, m.x, m.y, role);
-      if (t.fours >= 1 || t.rushes >= 2) return [{ x: m.x, y: m.y }];
+      if (t.fours >= 1 || t.rushes >= 2 ||
+          (t.rushes >= 1 && t.threes >= 1) || t.threes >= 2) {
+        return [{ x: m.x, y: m.y }];
+      }
     }
     // 3) 单个冲四：对方只能堵，堵完我继续找冲四
     for (i = 0; i < list.length; i++) {
@@ -401,7 +427,7 @@
    */
   function bestMove(board, role, level, timeLimitMs) {
     var opp = other(role);
-    var budget = timeLimitMs || 2000;                // 思考时间上限（毫秒）
+    var budget = timeLimitMs || 2500;                // 思考时间上限（毫秒）
     var emptyCount = 0;
     for (var y = 0; y < SIZE; y++) for (var x = 0; x < SIZE; x++) if (!board[y][x]) emptyCount++;
     if (emptyCount === SIZE * SIZE) return { x: 7, y: 7, score: 0, nodes: 0 };
@@ -429,12 +455,13 @@
       return { x: pick.x, y: pick.y, score: 0, nodes: 0 };
     }
 
-    /* 3) 我能造活四 / 双冲四 → 下一步必胜（对手挡不住）；3.5) 双威胁同样是必胜 */
+    /* 3) 我能造活四 / 双冲四 / 四三 / 双活三 → 下一步必胜（对手挡不住） */
     if (level !== 'easy') {
       for (i = 0; i < list.length; i++) {
         m = list[i];
         var tt = threatsAt(board, m.x, m.y, role);
-        if (tt.fours >= 1 || tt.rushes >= 2) {
+        if (tt.fours >= 1 || tt.rushes >= 2 ||
+            (tt.rushes >= 1 && tt.threes >= 1) || tt.threes >= 2) {
           return { x: m.x, y: m.y, score: 4000000, nodes: 0 };
         }
       }
@@ -512,8 +539,11 @@
 
     /* 困难档：迭代加深搜索（2→4→6→8 层），带时间上限，超时就退回上一层结果 */
     if (level === 'hard') {
-      var res = searchBest(board, role, 10, budget);
-      if (res) return { x: res.x, y: res.y, score: res.score || 0, nodes: res.nodes || 0 };
+      var res = searchBest(board, role, 12, budget);
+      if (res) {
+        var safe = pickSafeMove(board, role, res, budget);   // 这一步会不会送对手一个连杀？
+        return { x: safe.x, y: safe.y, score: res.score || 0, nodes: res.nodes || 0 };
+      }
     }
 
     /* 中等档：浅搜索 + 一点随机，避免每局一模一样 */
