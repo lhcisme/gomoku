@@ -277,16 +277,18 @@
           return { x: m.x, y: m.y, score: 4000000, nodes: 0 };
         }
       }
-      var dbl = null, dblScore = -1;
-      for (i = 0; i < list.length; i++) {
-        m = list[i];
-        var t0 = threatsAt(board, m.x, m.y, role);
-        if (t0.fours + t0.threes >= 2) {
-          var sc = t0.max + pointScore(board, m.x, m.y, other(role)) * 0.5;
-          if (sc > dblScore) { dblScore = sc; dbl = m; }
+      if (level === 'hard') {                       // 双威胁的主动构造只有困难档会做
+        var dbl = null, dblScore = -1;
+        for (i = 0; i < list.length; i++) {
+          m = list[i];
+          var t0 = threatsAt(board, m.x, m.y, role);
+          if (t0.fours + t0.rushes + t0.threes >= 2) {
+            var sc = t0.max + pointScore(board, m.x, m.y, other(role)) * 0.5;
+            if (sc > dblScore) { dblScore = sc; dbl = m; }
+          }
         }
+        if (dbl) return { x: dbl.x, y: dbl.y, score: 3800000, nodes: 0 };
       }
-      if (dbl) return { x: dbl.x, y: dbl.y, score: 3800000, nodes: 0 };
     }
     /* 4) 对手下一手能造活四或双威胁 → 必须先拆 */
     if (level !== 'easy') {
@@ -294,7 +296,8 @@
       for (i = 0; i < list.length; i++) {
         m = list[i];
         var t = threatsAt(board, m.x, m.y, opp);
-        if (t.fours >= 1 || t.fours + t.rushes + t.threes >= 2) oppThreats.push({ x: m.x, y: m.y, t: t });
+        var dangerous = t.fours >= 1 || (level === 'hard' && t.fours + t.rushes + t.threes >= 2);
+        if (dangerous) oppThreats.push({ x: m.x, y: m.y, t: t });
       }
       if (oppThreats.length) {
         var defCands = [], seen = {};
