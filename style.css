@@ -10,6 +10,8 @@
   --radius:16px;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+/* 必须放在最前面：否则 .result 的 display:flex 会把 hidden 属性顶掉 */
+[hidden]{display:none !important}
 html,body{margin:0;padding:0}
 body{
   background:var(--bg);

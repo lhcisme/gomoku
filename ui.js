@@ -307,6 +307,7 @@
   window.addEventListener('resize', layout);
   window.addEventListener('orientationchange', function () { setTimeout(layout, 200); });
 
+  hideResult();          // 双保险：首屏绝不出现结算层
   layout();
   updateStatus();
 

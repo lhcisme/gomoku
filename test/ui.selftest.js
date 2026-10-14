@@ -68,6 +68,17 @@ global.window = {
   setTimeout: setTimeout, clearTimeout: clearTimeout
 };
 
+/* ---------- 首屏防回归检查 ---------- */
+console.log('【0】首屏（曾经出过 bug：CSS 的 display:flex 顶掉 hidden，一进来就显示"你赢了"）');
+{
+  const fs = require('fs');
+  const css = fs.readFileSync(path.join(__dirname, '..', 'style.css'), 'utf8');
+  ok('CSS 有 [hidden]{display:none !important} 兜底',
+    /\[hidden\]\s*\{[^}]*display\s*:\s*none\s*!important/.test(css));
+  const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+  ok('结算层默认带 hidden 属性', /id="result"[^>]*hidden/.test(html));
+}
+
 /* ---------- 加载 ---------- */
 console.log('【1】加载');
 let loadErr = null;
@@ -81,6 +92,10 @@ if (loadErr) { console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败'
 
 const G = global.window.__gomoku;
 ok('调试句柄可用', !!(G && G.state));
+els.result.hidden = false;   // 故意弄脏，验证初始化会隐藏结算层
+delete require.cache[require.resolve(path.join(__dirname, '..', 'ui.js'))];
+require(path.join(__dirname, '..', 'ui.js'));
+ok('初始化时结算层被隐藏', els.result.hidden === true);
 
 const st = G.state;
 console.log('【2】玩家落子 & AI 应手');
